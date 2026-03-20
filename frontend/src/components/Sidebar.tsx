@@ -4,6 +4,8 @@ import { FaHome } from "react-icons/fa";
 import { useEffect, useState } from "react";
 import { apiService } from "../services/land_price";
 import { useNavigate, useLocation } from "react-router-dom";
+import { useContext } from "react";
+import { AppContext } from "../context/context";
 
 const Sidebar = () => {
     const navigateFunc = useNavigate();
@@ -17,8 +19,10 @@ const Sidebar = () => {
     const [options, setOptions] = useState<string[]>([])
     const [optionsURLS, setOptionsURLS] = useState<{[key: string]: string}>({})
 
-    
+    const { data, setData } = useContext(AppContext);
     useEffect(()=>{
+        console.log("Data from Context in Sidebar:", data);
+        setData({sidebar: "This is data from the sidebar component"});
         console.log("Current Location:" , currentLocation)
         async function getSidebarOptions(){
             const data = await apiService.getSidebarOptions();
