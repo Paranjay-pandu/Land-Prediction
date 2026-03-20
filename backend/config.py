@@ -61,4 +61,8 @@ META_DATA = {
   "trained_at": "2026-03-19T20:09:54.809429"
 }
 
-SIDEBAR_OPTIONS = ["Prediction", "Compare"]
+SIDEBAR_OPTIONS = {
+  "Home": "/home",
+  "Prediction": "/predict",
+  "Compare": "/compare",
+}

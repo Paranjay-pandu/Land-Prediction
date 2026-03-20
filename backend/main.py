@@ -9,6 +9,7 @@ app = FastAPI()
 origins = [
     "http://localhost:5173"
 ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -43,14 +44,3 @@ def get_indicator_options():
 def get_sidebar_options():
     side_bar_options = SIDEBAR_OPTIONS
     return side_bar_options
-    
-
-# export const getPredictedPrice = async (region: string, indicator: string, year: number) => {
-#     try {
-#         const response = await api.get("/predict", {params: { region, indicator, year}
-#         });
-#         return response.data;
-#     } catch(err) {
-#         console.error("Error in api service: ", err)
-#     }
-# }

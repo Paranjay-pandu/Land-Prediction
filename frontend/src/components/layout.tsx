@@ -5,7 +5,7 @@ const Layout = ()=>{
     return (
         <div className="h-screen w-screen relative flex overflow-hidden">
             <Sidebar />
-            <main className="z-20 absolute h-screen left-1/6 top-0 w-[calc(100%-1/6)]">
+            <main className="flex-1 h-full overflow-y-auto bg-slate-900">
                 <Outlet />
             </main>
         </div>

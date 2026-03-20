@@ -13,6 +13,12 @@ function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element = {<HomePage />} />
+          <Route path="/predict" element = {<div> Prediction Page </div>} />
+          <Route path="/compare" element = {<div> Comparison Page </div>} />
+          <Route path="/home" element = {<HomePage />} />
+
+
+          <Route path="*" element = {<div> 404 Not Found </div>} />
         </Route>
       </Routes>
     </BrowserRouter>
