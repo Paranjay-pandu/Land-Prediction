@@ -7,3 +7,14 @@
     gap: 2px;
     /* background-color: #ef4444; */
 }
+
+.sample{
+    display: flex;
+    gap: 2em;
+}
+
+.sample *{
+    background: #000;
+    border: 1px solid white;
+    color: white;
+}

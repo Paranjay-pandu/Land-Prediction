@@ -3,6 +3,7 @@ import {  Route, Routes, BrowserRouter } from 'react-router-dom'
 import './App.css';
 import HomePage from './pages/Home.tsx';
 import Layout from "./components/layout.tsx";
+import PredictionPage from './pages/Predict.tsx';
 
 function App() {
   // const [count, setCount] = useState(0)
@@ -13,7 +14,7 @@ function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element = {<HomePage />} />
-          <Route path="/predict" element = {<div> Prediction Page </div>} />
+          <Route path="/predict" element = {<PredictionPage />} />
           <Route path="/compare" element = {<div> Comparison Page </div>} />
           <Route path="/home" element = {<HomePage />} />
 
