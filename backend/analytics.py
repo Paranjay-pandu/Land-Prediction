@@ -11,7 +11,7 @@ BASE_DIR = os.path.dirname(__file__)
 MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
 
 # You can set this from env in production:
-ANALYTICS_DATA_PATH= os.path.join(BASE_DIR, "data\ml_ready_dataset.csv")
+ANALYTICS_DATA_PATH= os.path.join(BASE_DIR, "data/ml_ready_dataset.csv")
 DEFAULT_ANALYTICS_DATA_PATH = ANALYTICS_DATA_PATH
 
 DEFAULT_METADATA_PATH = os.getenv(
