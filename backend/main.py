@@ -9,8 +9,11 @@ from analytics import *
 predic_model = load_model()
 
 app = FastAPI()
+# origins = [
+#     "http://localhost:5173"
+# ]
 origins = [
-    "http://localhost:5173"
+    "*"
 ]
 
 app.add_middleware(
