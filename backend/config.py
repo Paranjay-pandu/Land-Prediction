@@ -64,5 +64,6 @@ META_DATA = {
 SIDEBAR_OPTIONS = {
   "Home": "/home",
   "Prediction": "/predict",
+  "Market Insights": "/analytics",
   "Compare": "/compare",
 }

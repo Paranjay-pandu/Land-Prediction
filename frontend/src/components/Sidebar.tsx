@@ -1,61 +1,89 @@
 import { AiOutlineStock } from "react-icons/ai";
-import { FaScaleUnbalanced } from "react-icons/fa6";
-import { FaHome } from "react-icons/fa";
-import { useEffect, useState } from "react";
+import { FaBalanceScale, FaChartLine, FaCompass, FaHistory, FaHome, FaQuestionCircle, FaSlidersH } from "react-icons/fa";
+import { useEffect, useMemo, useState } from "react";
+import { NavLink } from "react-router-dom";
 import { apiService } from "../services/land_price";
-import { useNavigate, useLocation } from "react-router-dom";
-import { useContext } from "react";
-import { AppContext } from "../context/context";
 
 const Sidebar = () => {
-    const navigateFunc = useNavigate();
-    const location  = useLocation();
-    const currentLocation = location.pathname;
-    const sidebarOptions = [
-        {label: "Home", icon: <FaHome /> },
-        {label: "Prediction", icon: <AiOutlineStock /> },
-        {label: "Compare", icon: <FaScaleUnbalanced />}
-    ]
-    const [options, setOptions] = useState<string[]>([])
-    const [optionsURLS, setOptionsURLS] = useState<{[key: string]: string}>({})
+    const [apiOptions, setApiOptions] = useState<Record<string, string>>({});
 
-    const { data, setData } = useContext(AppContext);
-    useEffect(()=>{
-        console.log("Data from Context in Sidebar:", data);
-        setData({sidebar: "This is data from the sidebar component"});
-        console.log("Current Location:" , currentLocation)
-        async function getSidebarOptions(){
-            const data = await apiService.getSidebarOptions();
-            const optionsData = Object.keys(data);
-            setOptionsURLS(data);
-            setOptions(optionsData);
+    const navItems = [
+        { label: "Predictor", icon: <AiOutlineStock />, to: "/predict" },
+        { label: "Compare", icon: <FaBalanceScale />, to: "/compare" },
+        { label: "Market Insights", icon: <FaChartLine />, to: "/analytics" },
+        { label: "Historical Data", icon: <FaHistory />, to: "/home" },
+        { label: "Settings", icon: <FaSlidersH />, to: "/home" },
+    ];
+
+    useEffect(() => {
+        async function loadSidebarOptions() {
+            try {
+                const response = await apiService.getSidebarOptions();
+                if (response && typeof response === "object") {
+                    setApiOptions(response as Record<string, string>);
+                }
+            } catch (error) {
+                console.error("Error loading sidebar options:", error);
+            }
         }
-        getSidebarOptions();
-    }, [])
+
+        void loadSidebarOptions();
+    }, []);
+
+    const visibleNavItems = useMemo(() => {
+        if (Object.keys(apiOptions).length === 0) {
+            return navItems;
+        }
+
+        return navItems
+            .map((item) => {
+                const direct = apiOptions[item.label];
+                if (direct) {
+                    return { ...item, to: direct };
+                }
+
+                const alias = item.label === "Predictor" ? apiOptions.Prediction : undefined;
+                if (alias) {
+                    return { ...item, to: alias };
+                }
+
+                return item;
+            })
+            .filter((item) => {
+                const acceptedLabels = [item.label, item.label === "Predictor" ? "Prediction" : ""];
+                return acceptedLabels.some((label) => label && label in apiOptions);
+            });
+    }, [apiOptions]);
 
     return (
-        // <div className="h-screen bg-gray-800 max-w-1/6 min-w-16 transition-all ease-in-out hover:w-1/6 duration-300 overflow-hidden top-0 left-0 absolute z-50">
-        <div className="h-screen  bg-slate-950 max-w-1/6 w-1/6 transition-all ease-in-out duration-300 overflow-hidden top-0 left-0">
-            <div className="flex-column gap-2 w-full relative">
-                <div className="whitespace-break-spaces">
-                    <div className="text-xl font-semibold my-3 mx-2 text-indigo-400 tracking-tight">Taskarinchuta</div>
+        <aside className="sidebar-shell">
+            <div className="sidebar-brand">
+                <div className="brand-icon">
+                    <FaCompass />
                 </div>
-                <hr className="border-gray-600 mb-5"/>
-                { (options.length > 0) && sidebarOptions
-                .filter((option)=> options.includes(option.label))
-                .map((option, index)=>{
-                    return (
-                        <div className={`cursor-pointer flex gap-2 text-lg w-full items-center py-2 px-2 transition-all ease-in-out ${(currentLocation === optionsURLS[option.label])? "bg-indigo-600 text-white shadow-lg": "text-slate-400 hover:bg-slate-900 hover:text-slate-100"}`}
-                            key = {index}
-                            onClick={()=> navigateFunc(optionsURLS[option.label])}
-                        >
-                            <span className="text-orange-400">{option.icon}</span> <span className="text-white">{option.label}</span>
-                        </div>
-                    )
-                })}
+                <div>
+                    <p className="brand-title">TerraSight | UK</p>
+                    <p className="brand-subtitle">Land-Price Intelligence</p>
+                </div>
             </div>
-        </div>
-    )
-}
+            <nav className="sidebar-nav">
+                <NavLink to="/home" className={({ isActive }) => `sidebar-item ${isActive ? "active" : ""}`}>
+                    <FaHome />
+                    <span>Dashboard</span>
+                </NavLink>
+                {visibleNavItems.map((item) => (
+                    <NavLink key={item.label} to={item.to} className={({ isActive }) => `sidebar-item ${isActive ? "active" : ""}`}>
+                        {item.icon}
+                        <span>{item.label}</span>
+                    </NavLink>
+                ))}
+            </nav>
+            <div className="sidebar-help">
+                <FaQuestionCircle />
+                <span>Help</span>
+            </div>
+        </aside>
+    );
+};
 
 export default Sidebar;

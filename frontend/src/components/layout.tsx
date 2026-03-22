@@ -3,9 +3,9 @@ import Sidebar from "./Sidebar.tsx";
 
 const Layout = ()=>{
     return (
-        <div className="h-screen w-screen relative flex overflow-hidden">
+        <div className="app-shell">
             <Sidebar />
-            <main className="flex-1 h-full overflow-y-auto bg-slate-900">
+            <main className="app-content">
                 <Outlet />
             </main>
         </div>
