@@ -1,5 +1,4 @@
 from shutil import copy
-from turtle import pd
 import joblib
 import os
 from config import *
