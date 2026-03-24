@@ -1,5 +1,6 @@
 import { AiOutlineStock } from "react-icons/ai";
-import { FaBalanceScale, FaChartLine, FaCompass, FaHistory, FaHome, FaQuestionCircle, FaSlidersH } from "react-icons/fa";
+// import { FaBalanceScale, FaChartLine, FaCompass, FaHistory, FaHome, FaQuestionCircle, FaSlidersH } from "react-icons/fa";
+import { FaBalanceScale, FaChartLine, FaCompass, FaHome } from "react-icons/fa";
 import { useEffect, useMemo, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { apiService } from "../services/land_price";
@@ -11,8 +12,8 @@ const Sidebar = () => {
         { label: "Predictor", icon: <AiOutlineStock />, to: "/predict" },
         { label: "Compare", icon: <FaBalanceScale />, to: "/compare" },
         { label: "Market Insights", icon: <FaChartLine />, to: "/analytics" },
-        { label: "Historical Data", icon: <FaHistory />, to: "/home" },
-        { label: "Settings", icon: <FaSlidersH />, to: "/home" },
+        // { label: "Historical Data", icon: <FaHistory />, to: "/home" },
+        // { label: "Settings", icon: <FaSlidersH />, to: "/home" },
     ];
 
     useEffect(() => {
@@ -78,10 +79,10 @@ const Sidebar = () => {
                     </NavLink>
                 ))}
             </nav>
-            <div className="sidebar-help">
+            {/* <div className="sidebar-help">
                 <FaQuestionCircle />
                 <span>Help</span>
-            </div>
+            </div> */}
         </aside>
     );
 };

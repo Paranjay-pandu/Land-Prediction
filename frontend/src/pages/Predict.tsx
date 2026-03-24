@@ -28,6 +28,11 @@ const PredictionPage = () => {
         historical?: HistoryPoint[];
         forecast?: HistoryPoint[];
     }
+    interface ChartPoint {
+        year: number;
+        actual: number | null;
+        prediction: number | null;
+    }
 
     const [regions, setRegions] = useState<string[]>([]);
     const [predictOptions, setPredictOptions] = useState<PredictionOptions>({});
@@ -35,6 +40,7 @@ const PredictionPage = () => {
     const [result, setResult] = useState<PredictionResponse | null>(null);
     const [historySeries, setHistorySeries] = useState<HistoryPoint[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    const [isOptionsLoading, setIsOptionsLoading] = useState(true);
     const [dataObj, setDataObj] = useState<DataObj>({
         region: '',
         indicator: '',
@@ -48,6 +54,8 @@ const PredictionPage = () => {
         [dataObj.indicator, selectedIndicatorLabel],
     );
     const formatForIndicator = (value: unknown) => formatIndicatorValue(value, selectedMeta);
+    const formatAxisTick = (value: number) => Number(value).toLocaleString();
+    const hasPredictionData = result !== null;
 
     function updateData(e: ChangeEvent<HTMLSelectElement | HTMLInputElement>, action: string){
         if(action === "region"){
@@ -123,69 +131,70 @@ const PredictionPage = () => {
         }
     }
 
-    const chartData = useMemo(() => {
-        const historical = historySeries.length > 0
-            ? historySeries
-            : (result?.historical ?? [
-            { year: dataObj.year - 5, value: 520000 },
-            { year: dataObj.year - 4, value: 541000 },
-            { year: dataObj.year - 3, value: 562000 },
-            { year: dataObj.year - 2, value: 584000 },
-            { year: dataObj.year - 1, value: 611000 },
-        ]);
-        const predicted = result?.predicted_value ?? result?.prediction ?? result?.value ?? 640000;
-
-        const boundedHistorical = historical
-            .filter((row) => row.year <= dataObj.year)
-            .slice(-8);
-
-        const lastHistorical = boundedHistorical[boundedHistorical.length - 1];
-        const baseSeries = boundedHistorical.map((row) => ({
-            year: row.year,
-            actual: row.value,
-            prediction: null as number | null,
-        }));
-
-        if (!lastHistorical) {
-            return [{ year: dataObj.year, actual: null, prediction: predicted }];
+    const chartData = useMemo<ChartPoint[]>(() => {
+        if (!hasPredictionData) {
+            return [];
         }
 
-        const bridgeYear = lastHistorical.year;
-        const bridgeSeries = baseSeries.map((row) =>
-            row.year === bridgeYear
-                ? { ...row, prediction: row.actual }
-                : row,
+        const predicted = result?.predicted_value ?? result?.prediction ?? result?.value;
+        if (predicted === undefined) {
+            return [];
+        }
+
+        const historical = (historySeries.length > 0 ? historySeries : (result?.historical ?? []))
+            .slice()
+            .sort((a, b) => a.year - b.year);
+
+        const latestHistoricalYear = historical[historical.length - 1]?.year;
+        const startYear = latestHistoricalYear !== undefined
+            ? Math.min(latestHistoricalYear, dataObj.year)
+            : dataObj.year;
+        const endYear = dataObj.year;
+
+        const historicalByYear = new Map<number, number>(
+            historical
+                .filter((point) => Number.isFinite(point.year) && Number.isFinite(point.value))
+                .map((point) => [point.year, point.value]),
         );
 
-        const hasTargetYear = bridgeSeries.some((row) => row.year === dataObj.year);
-        const withTarget = hasTargetYear
-            ? bridgeSeries.map((row) => row.year === dataObj.year ? { ...row, actual: null, prediction: predicted } : row)
-            : [...bridgeSeries, { year: dataObj.year, actual: null, prediction: predicted }];
+        const basePoint = [...historicalByYear.entries()]
+            .filter(([year]) => year <= endYear)
+            .sort((a, b) => a[0] - b[0])
+            .pop();
 
-        return withTarget.sort((a, b) => a.year - b.year);
-    }, [dataObj.year, historySeries, result]);
+        const baseYear = basePoint?.[0] ?? startYear;
+        const baseValue = basePoint?.[1] ?? predicted;
 
-    const chartTicks = useMemo(() => {
-        if (chartData.length === 0) {
-            return [dataObj.year];
-        }
-
-        const minYear = chartData[0].year;
-        const maxYear = chartData[chartData.length - 1].year;
-        const ticks: number[] = [];
-        for (let y = minYear; y <= maxYear; y += 1) {
-            if ((y - minYear) % 2 === 0 || y === dataObj.year || y === maxYear) {
-                ticks.push(y);
+        const points: ChartPoint[] = [];
+        for (let year = startYear; year <= endYear; year += 1) {
+            const actualValue = historicalByYear.get(year);
+            if (actualValue !== undefined) {
+                const isBridgeYear = year === baseYear && year !== endYear;
+                points.push({
+                    year,
+                    actual: actualValue,
+                    prediction: isBridgeYear || year === endYear ? (year === endYear ? predicted : actualValue) : null,
+                });
+                continue;
             }
+
+            if (endYear === baseYear) {
+                points.push({ year, actual: null, prediction: year === endYear ? predicted : baseValue });
+                continue;
+            }
+
+            const ratio = (year - baseYear) / (endYear - baseYear);
+            const interpolated = baseValue + ((predicted - baseValue) * Math.max(0, Math.min(1, ratio)));
+            points.push({ year, actual: null, prediction: interpolated });
         }
-        if (!ticks.includes(dataObj.year)) {
-            ticks.push(dataObj.year);
-        }
-        return ticks.sort((a, b) => a - b);
-    }, [chartData, dataObj.year]);
+
+        return points;
+    }, [dataObj.year, hasPredictionData, historySeries, result]);
+
+    const chartTicks = useMemo(() => chartData.map((point) => point.year), [chartData]);
 
     const predictionValue = useMemo(() => {
-        return result?.predicted_value ?? result?.prediction ?? result?.value ?? chartData[chartData.length - 1]?.prediction ?? 0;
+        return result?.predicted_value ?? result?.prediction ?? result?.value ?? chartData[chartData.length - 1]?.prediction ?? undefined;
     }, [chartData, result]);
 
     const [lowerBound, upperBound] = useMemo(() => {
@@ -195,6 +204,9 @@ const PredictionPage = () => {
         if (typeof result?.lower_bound === "number" && typeof result?.upper_bound === "number") {
             return [result.lower_bound, result.upper_bound];
         }
+        if (predictionValue === undefined) {
+            return [undefined, undefined] as unknown as [number, number];
+        }
         const swing = predictionValue * 0.08;
         return [predictionValue - swing, predictionValue + swing];
     }, [predictionValue, result]);
@@ -202,6 +214,7 @@ const PredictionPage = () => {
     useEffect(()=>{
         async function getOptions() {
             try {
+                setIsOptionsLoading(true);
                 const response = await apiService.getRegions();
                 const safeRegions = Array.isArray(response) ? response : [];
                 setRegions(safeRegions);
@@ -228,6 +241,8 @@ const PredictionPage = () => {
 
             } catch (err) {
                 console.error("Error in getRegions>> Predict page: ", err)
+            } finally {
+                setIsOptionsLoading(false);
             }
         }
         getOptions()
@@ -286,31 +301,48 @@ const PredictionPage = () => {
             <section className="predict-grid">
                 <article className="panel predict-animate">
                     <h2>Projected {selectedIndicatorLabel}</h2>
-                    <p className="predict-primary">{formatForIndicator(predictionValue)}</p>
+                    {isOptionsLoading || isLoading || !hasPredictionData || predictionValue === undefined ? (
+                        <div className="loading-block" aria-label="Loading projected value" />
+                    ) : (
+                        <p className="predict-primary">{formatForIndicator(predictionValue)}</p>
+                    )}
                     <p className="predict-secondary">{dataObj.region || "Region"} · {dataObj.year}</p>
                 </article>
 
                 <article className="panel predict-animate">
                     <h2>Confidence Interval (95%)</h2>
-                    <p className="predict-secondary">{formatForIndicator(lowerBound)} to {formatForIndicator(upperBound)}</p>
-                    <div className="confidence-band" aria-hidden="true">
-                        <span className="confidence-fill" />
-                    </div>
+                    {isOptionsLoading || isLoading || !hasPredictionData || predictionValue === undefined ? (
+                        <div className="loading-inline" aria-label="Loading confidence interval" />
+                    ) : (
+                        <>
+                            <p className="predict-secondary">{formatForIndicator(lowerBound)} to {formatForIndicator(upperBound)}</p>
+                            <div className="confidence-band" aria-hidden="true">
+                                <span className="confidence-fill" />
+                            </div>
+                        </>
+                    )}
                 </article>
 
                 <article className="panel chart-span predict-animate">
                     <h2>{selectedIndicatorLabel} Trend Timeline</h2>
                     <div className="chart-wrap">
-                        <ResponsiveContainer width="100%" height={260}>
-                            <LineChart data={chartData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
-                                <XAxis dataKey="year" type="number" domain={["dataMin", "dataMax"]} ticks={chartTicks} allowDecimals={false} />
-                                <YAxis />
-                                <Tooltip formatter={formatForIndicator} />
-                                <Line type="monotone" dataKey="actual" name="Historical" stroke="#125f7a" strokeWidth={2.6} dot={false} />
-                                <Line type="monotone" dataKey="prediction" name="Forecast" stroke="#2a6f97" strokeDasharray="6 6" strokeWidth={2.6} dot={false} />
-                            </LineChart>
-                        </ResponsiveContainer>
+                        {isOptionsLoading || isLoading || !hasPredictionData || chartData.length === 0 ? (
+                            <div className="loading-chart" role="status" aria-live="polite">
+                                <div className="loading-spinner" />
+                                <span>Loading trend data...</span>
+                            </div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={260}>
+                                <LineChart data={chartData} margin={{ left: 18, right: 10, top: 8, bottom: 6 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
+                                    <XAxis dataKey="year" type="number" domain={["dataMin", "dataMax"]} ticks={chartTicks} allowDecimals={false} />
+                                    <YAxis width={96} tickFormatter={formatAxisTick} />
+                                    <Tooltip formatter={formatForIndicator} />
+                                    <Line type="monotone" dataKey="actual" name="Historical" stroke="#125f7a" strokeWidth={2.6} dot={false} />
+                                    <Line type="monotone" dataKey="prediction" name="Forecast" stroke="#2a6f97" strokeDasharray="6 6" strokeWidth={2.6} dot={false} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </article>
             </section>

@@ -8,6 +8,13 @@ const PredictionPage = lazy(() => import('./pages/Predict.tsx'));
 const ComparePage = lazy(() => import('./pages/Compare.tsx'));
 const AnalyticsPage = lazy(() => import('./pages/Analytics.tsx'));
 
+const RouteFallback = ({ text }: { text: string }) => (
+  <div className="panel route-loader" role="status" aria-live="polite">
+    <div className="loading-spinner" />
+    <span>{text}</span>
+  </div>
+);
+
 function App() {
   // const [count, setCount] = useState(0)
 
@@ -16,11 +23,11 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
-          <Route path="/" element={<Suspense fallback={<div className="panel">Loading dashboard...</div>}><HomePage /></Suspense>} />
-          <Route path="/predict" element={<Suspense fallback={<div className="panel">Loading predictor...</div>}><PredictionPage /></Suspense>} />
-          <Route path="/compare" element={<Suspense fallback={<div className="panel">Loading comparison...</div>}><ComparePage /></Suspense>} />
-          <Route path="/analytics" element={<Suspense fallback={<div className="panel">Loading analytics...</div>}><AnalyticsPage /></Suspense>} />
-          <Route path="/home" element={<Suspense fallback={<div className="panel">Loading dashboard...</div>}><HomePage /></Suspense>} />
+          <Route path="/" element={<Suspense fallback={<RouteFallback text="Loading dashboard..." />}><HomePage /></Suspense>} />
+          <Route path="/predict" element={<Suspense fallback={<RouteFallback text="Loading predictor..." />}><PredictionPage /></Suspense>} />
+          <Route path="/compare" element={<Suspense fallback={<RouteFallback text="Loading comparison..." />}><ComparePage /></Suspense>} />
+          <Route path="/analytics" element={<Suspense fallback={<RouteFallback text="Loading analytics..." />}><AnalyticsPage /></Suspense>} />
+          <Route path="/home" element={<Suspense fallback={<RouteFallback text="Loading dashboard..." />}><HomePage /></Suspense>} />
 
 
           <Route path="*" element = {<div> 404 Not Found </div>} />

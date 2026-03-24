@@ -9,6 +9,7 @@ type TimeSeriesRow = {
     region: string;
     year: number;
     value: number;
+    forecast_value?: number;
     moving_average?: number;
     growth_yoy?: number;
 };
@@ -29,6 +30,85 @@ type CorrelationPair = {
     corr: number;
 };
 
+const SERIES_START_YEAR = 2023;
+
+const toFiniteNumber = (value: unknown): number | undefined => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === "string") {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return undefined;
+};
+
+const buildContinuousAnalyticsSeries = (
+    rows: TimeSeriesRow[],
+    selectedYear: number,
+    selectedRegion: string,
+    selectedYearPrediction?: number,
+): TimeSeriesRow[] => {
+    const startYear = Math.min(SERIES_START_YEAR, selectedYear);
+    const historical = rows
+        .filter((row) => row.region === selectedRegion)
+        .sort((a, b) => a.year - b.year)
+        .filter((row) => row.year >= startYear && row.year <= selectedYear);
+
+    if (historical.length === 0) {
+        return [];
+    }
+
+    const byYear = new Map<number, TimeSeriesRow>(historical.map((row) => [row.year, row]));
+    const lastKnown = historical[historical.length - 1];
+    const targetValue = selectedYearPrediction ?? lastKnown.value;
+
+    const series: TimeSeriesRow[] = [];
+    let carryValue = historical[0].value;
+
+    for (let y = startYear; y <= selectedYear; y += 1) {
+        const existing = byYear.get(y);
+        if (existing) {
+            carryValue = existing.value;
+            const isLatestHistorical = y === lastKnown.year && y < selectedYear;
+            series.push({
+                ...existing,
+                forecast_value: isLatestHistorical ? existing.value : undefined,
+            });
+            continue;
+        }
+
+        if (y <= lastKnown.year) {
+            series.push({
+                region: selectedRegion,
+                year: y,
+                value: carryValue,
+                moving_average: undefined,
+                growth_yoy: undefined,
+                forecast_value: undefined,
+            });
+            continue;
+        }
+
+        const denominator = Math.max(selectedYear - lastKnown.year, 1);
+        const ratio = (y - lastKnown.year) / denominator;
+        const interpolated = lastKnown.value + ((targetValue - lastKnown.value) * Math.max(0, Math.min(1, ratio)));
+
+        series.push({
+            region: selectedRegion,
+            year: y,
+            value: interpolated,
+            moving_average: undefined,
+            growth_yoy: undefined,
+            forecast_value: interpolated,
+        });
+    }
+
+    return series;
+};
+
 const AnalyticsPage = () => {
     const analyticsRef = useRef<HTMLDivElement | null>(null);
     useStaggerReveal(analyticsRef, ".analytics-animate", 20);
@@ -47,7 +127,9 @@ const AnalyticsPage = () => {
     const [outliers, setOutliers] = useState<Array<{ region: string; year: number; value: number }>>([]);
     const [topPairs, setTopPairs] = useState<CorrelationPair[]>([]);
     const [regionStats, setRegionStats] = useState<RegionStatRow[]>([]);
+    const [isOptionsLoading, setIsOptionsLoading] = useState(true);
     const [loading, setLoading] = useState(false);
+    const [hasInitialData, setHasInitialData] = useState(false);
 
     const indicatorLabel = indicatorOptions[indicator] ?? "Indicator";
     const insightLabel = indicatorOptions[insight] ?? "Insight";
@@ -60,6 +142,7 @@ const AnalyticsPage = () => {
     useEffect(() => {
         async function init() {
             try {
+                setIsOptionsLoading(true);
                 const [regionsResponse, indicatorsResponse, predictOptionsResponse] = await Promise.all([
                     apiService.getRegions(),
                     apiService.getIndicatorOptions(),
@@ -90,6 +173,8 @@ const AnalyticsPage = () => {
                 }
             } catch (error) {
                 console.error("Failed to initialize analytics page:", error);
+            } finally {
+                setIsOptionsLoading(false);
             }
         }
 
@@ -109,8 +194,9 @@ const AnalyticsPage = () => {
                     ? selectedIndicatorSet
                     : [indicator, insight].filter(Boolean);
 
-                const [timeseriesResponse, outliersResponse, correlationResponse, statsResponse] = await Promise.all([
+                const [timeseriesResponse, predictionResponse, outliersResponse, correlationResponse, statsResponse] = await Promise.all([
                     apiService.getTimeSeries(indicator, region || undefined, maWindow),
+                    region ? apiService.getPredictedPrice(region, indicator, year) : Promise.resolve(undefined),
                     apiService.getOutliers(indicator),
                     apiService.getCorrelation(correlationIndicators),
                     apiService.getRegionStats(insight),
@@ -150,7 +236,18 @@ const AnalyticsPage = () => {
                     .sort((a, b) => a.year - b.year)
                     .filter((row) => row.year <= year);
 
-                setTimeSeries(parsedSeries);
+                const predictedForSelectedYear = predictionResponse && typeof predictionResponse === "object"
+                    ? toFiniteNumber((predictionResponse as Record<string, unknown>).value)
+                        ?? toFiniteNumber((predictionResponse as Record<string, unknown>).prediction)
+                        ?? toFiniteNumber((predictionResponse as Record<string, unknown>).predicted_value)
+                    : undefined;
+
+                if (region) {
+                    const extendedSeries = buildContinuousAnalyticsSeries(parsedSeries, year, region, predictedForSelectedYear);
+                    setTimeSeries(extendedSeries.length > 0 ? extendedSeries : parsedSeries.filter((row) => row.region === region));
+                } else {
+                    setTimeSeries(parsedSeries);
+                }
 
                 const outlierSource = outliersResponse && typeof outliersResponse === "object"
                     ? outliersResponse as Record<string, unknown>
@@ -246,11 +343,23 @@ const AnalyticsPage = () => {
                 console.error("Failed to load analytics data:", error);
             } finally {
                 setLoading(false);
+                setHasInitialData(true);
             }
         }
 
         void loadAnalytics();
     }, [indicator, indicatorOptions, insight, maWindow, region, year]);
+
+    if (isOptionsLoading || (!hasInitialData && loading)) {
+        return (
+            <div className="predict-page">
+                <div className="panel route-loader" role="status" aria-live="polite">
+                    <div className="loading-spinner" />
+                    <span>Loading analytics data...</span>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div ref={analyticsRef} className="predict-page">
@@ -260,38 +369,54 @@ const AnalyticsPage = () => {
             </header>
 
             <section className="predict-control-row analytics-animate">
-                <label>
+                <label title="Select the region you want to analyze.">
                     Region
-                    <select value={region} onChange={(e) => setRegion(e.target.value)}>
+                    <select
+                        value={region}
+                        onChange={(e) => setRegion(e.target.value)}
+                        title="Choose a region to filter all analytics panels."
+                    >
                         {regions.map((item) => (
                             <option key={item} value={item}>{item}</option>
                         ))}
                     </select>
                 </label>
-                <label>
+                <label title="Choose the main indicator for trend and outlier analysis.">
                     Indicator
-                    <select value={indicator} onChange={(e) => setIndicator(e.target.value)}>
+                    <select
+                        value={indicator}
+                        onChange={(e) => setIndicator(e.target.value)}
+                        title="Select an indicator to plot time series and outliers."
+                    >
                         {Object.entries(indicatorOptions).map(([key, label]) => (
                             <option key={key} value={key}>{label}</option>
                         ))}
                     </select>
                 </label>
-                <label>
+                <label title="Choose the indicator used in regional statistics.">
                     Insight
-                    <select value={insight} onChange={(e) => setInsight(e.target.value)}>
+                    <select
+                        value={insight}
+                        onChange={(e) => setInsight(e.target.value)}
+                        title="Select an indicator for region-level mean and median stats."
+                    >
                         {Object.entries(indicatorOptions).map(([key, label]) => (
                             <option key={key} value={key}>{label}</option>
                         ))}
                     </select>
                 </label>
-                <label>
+                <label title="Set moving average smoothing window size.">
                     MA Window
-                    <select value={maWindow} onChange={(e) => setMaWindow(Number(e.target.value) as 3 | 5)}>
+                    <select
+                        value={maWindow}
+                        onChange={(e) => setMaWindow(Number(e.target.value) as 3 | 5)}
+                        title="Use 3 or 5 years to smooth the time series moving average."
+                    >
                         <option value={3}>3</option>
                         <option value={5}>5</option>
                     </select>
                 </label>
-                <label>
+                <label title="Pick the target year used for forecast extension.">
                     Year
                     <input
                         type="number"
@@ -299,78 +424,104 @@ const AnalyticsPage = () => {
                         max={predictionRange[1]}
                         value={year}
                         onChange={(e) => setYear(Number(e.target.value))}
+                        title="Choose a year within the supported prediction range."
                     />
                 </label>
-                <button type="button" disabled={loading}>{loading ? "Refreshing..." : "Live"}</button>
+                <button
+                    type="button"
+                    disabled={loading}
+                    title="Data updates automatically when filters change."
+                >
+                    {loading ? "Refreshing..." : "Live"}
+                </button>
             </section>
 
             <section className="analytics-grid">
-                <article className="panel chart-span analytics-animate">
+                <article className="panel chart-span analytics-animate" title="Historical and forecast trend for the selected region and indicator.">
                     <h2>{indicatorLabel} Time Series</h2>
                     <p className="panel-subtitle">GET /analytics/timeseries?indicator={indicator}&amp;region={region}&amp;ma_window={maWindow}</p>
-                    <div className="chart-wrap">
-                        <ResponsiveContainer width="100%" height={280}>
-                            <LineChart data={timeSeries}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
-                                <XAxis dataKey="year" />
-                                <YAxis />
-                                <Tooltip formatter={formatIndicator} />
-                                <Legend />
-                                <Line dataKey="value" name={indicatorLabel} stroke="#1a6f8e" strokeWidth={2.3} dot={false} />
-                                <Line dataKey="moving_average" name={`MA (${maWindow})`} stroke="#6eaec8" strokeWidth={2.1} dot={false} strokeDasharray="5 5" />
-                            </LineChart>
-                        </ResponsiveContainer>
+                    <div className="chart-wrap" title="Line chart showing raw values, moving average, and forecast continuation.">
+                        {loading ? (
+                            <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing time series...</span></div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={280}>
+                                <LineChart data={timeSeries}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
+                                    <XAxis dataKey="year" />
+                                    <YAxis />
+                                    <Tooltip formatter={formatIndicator} />
+                                    <Legend />
+                                    <Line dataKey="value" name={indicatorLabel} stroke="#1a6f8e" strokeWidth={2.3} dot={false} />
+                                    <Line dataKey="moving_average" name={`MA (${maWindow})`} stroke="#6eaec8" strokeWidth={2.1} dot={false} strokeDasharray="5 5" />
+                                    <Line dataKey="forecast_value" name="Forecast" stroke="#2a6f97" strokeWidth={2.1} dot={false} strokeDasharray="6 6" />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </article>
 
-                <article className="panel analytics-animate">
+                <article className="panel analytics-animate" title="Strongest positive and negative correlations among selected indicators.">
                     <h2>Top Correlations</h2>
                     <p className="panel-subtitle">GET /analytics/correlation</p>
-                    <div className="chart-wrap compact">
-                        <ResponsiveContainer width="100%" height={250}>
-                            <BarChart data={topPairs.map((row) => ({ pair: `${row.x} ~ ${row.y}`, corr: row.corr }))}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
-                                <XAxis dataKey="pair" hide />
-                                <YAxis domain={[-1, 1]} />
-                                <Tooltip formatter={(value: unknown) => typeof value === "number" ? value.toFixed(4) : "-"} />
-                                <Bar dataKey="corr" fill="#2c89a9" radius={[6, 6, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
+                    <div className="chart-wrap compact" title="Bar chart of the top correlation coefficient pairs.">
+                        {loading ? (
+                            <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing correlations...</span></div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={250}>
+                                <BarChart data={topPairs.map((row) => ({ pair: `${row.x} ~ ${row.y}`, corr: row.corr }))}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
+                                    <XAxis dataKey="pair" hide />
+                                    <YAxis domain={[-1, 1]} />
+                                    <Tooltip formatter={(value: unknown) => typeof value === "number" ? value.toFixed(4) : "-"} />
+                                    <Bar dataKey="corr" fill="#2c89a9" radius={[6, 6, 0, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </article>
 
-                <article className="panel chart-span analytics-animate">
+                <article className="panel chart-span analytics-animate" title="Regional distribution summary for the selected insight indicator.">
                     <h2>{insightLabel} Region Stats</h2>
                     <p className="panel-subtitle">GET /analytics/stats/regions?indicator={insight}</p>
-                    <div className="chart-wrap">
-                        <ResponsiveContainer width="100%" height={280}>
-                            <BarChart data={regionStats}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
-                                <XAxis dataKey="region" />
-                                <YAxis />
-                                <Tooltip formatter={formatInsight} />
-                                <Legend />
-                                <Bar dataKey="mean" name="Mean" fill="#1a6f8e" radius={[6, 6, 0, 0]} />
-                                <Bar dataKey="median" name="Median" fill="#6eaec8" radius={[6, 6, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
+                    <div className="chart-wrap" title="Mean and median comparison across regions.">
+                        {loading ? (
+                            <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing region stats...</span></div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={280}>
+                                <BarChart data={regionStats}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
+                                    <XAxis dataKey="region" />
+                                    <YAxis />
+                                    <Tooltip formatter={formatInsight} />
+                                    <Legend />
+                                    <Bar dataKey="mean" name="Mean" fill="#1a6f8e" radius={[6, 6, 0, 0]} />
+                                    <Bar dataKey="median" name="Median" fill="#6eaec8" radius={[6, 6, 0, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </article>
 
-                <article className="panel analytics-animate">
+                <article className="panel analytics-animate" title="Outlier rows detected for the selected indicator.">
                     <h2>Outliers</h2>
                     <p className="panel-subtitle">GET /analytics/outliers?indicator={indicator}</p>
-                    <div className="analytics-table-wrap">
-                        <table className="analytics-table">
+                    <div className="analytics-table-wrap" title="Tabular outliers with region, year, and value.">
+                        <table className="analytics-table" title="Detected outliers table">
                             <thead>
                                 <tr>
-                                    <th>Region</th>
-                                    <th>Year</th>
-                                    <th>Value</th>
+                                    <th title="Region where the outlier was observed.">Region</th>
+                                    <th title="Year in which the outlier value occurred.">Year</th>
+                                    <th title="Formatted indicator value flagged as outlier.">Value</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {outliers.length === 0 ? (
+                                {loading ? (
+                                    <tr>
+                                        <td colSpan={3}>
+                                            <div className="loading-inline" />
+                                        </td>
+                                    </tr>
+                                ) : outliers.length === 0 ? (
                                     <tr>
                                         <td colSpan={3}>No outliers for selected filters.</td>
                                     </tr>

@@ -7,7 +7,7 @@
     color: #f5fbff;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-start;
     padding: 1rem 0.8rem;
     border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
@@ -43,6 +43,7 @@
 .sidebar-nav {
     display: grid;
     gap: 0.35rem;
+    align-content: start;
 }
 
 .sidebar-item {
@@ -351,6 +352,72 @@
 .predict-control-row button:disabled {
     cursor: not-allowed;
     opacity: 0.58;
+}
+
+.loading-block,
+.loading-inline {
+    border-radius: 0.6rem;
+    background: linear-gradient(90deg, #e5eff6 25%, #f3f8fb 37%, #e5eff6 63%);
+    background-size: 400% 100%;
+    animation: panelShimmer 1.2s ease-in-out infinite;
+}
+
+.loading-block {
+    width: 72%;
+    height: 2.4rem;
+    margin: 0.45rem 0;
+}
+
+.loading-inline {
+    width: 88%;
+    height: 1rem;
+    margin-top: 0.45rem;
+}
+
+.loading-chart {
+    height: 260px;
+    border: 1px dashed #c8d6e3;
+    border-radius: 0.72rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    color: #4b677a;
+    background: #f5fafd;
+}
+
+.route-loader {
+    min-height: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+}
+
+.loading-spinner {
+    width: 1.6rem;
+    height: 1.6rem;
+    border: 2px solid #bfd4e1;
+    border-top-color: #16738d;
+    border-radius: 50%;
+    animation: spinLoader 0.8s linear infinite;
+}
+
+@keyframes panelShimmer {
+    0% {
+        background-position: 100% 50%;
+    }
+    100% {
+        background-position: 0 50%;
+    }
+}
+
+@keyframes spinLoader {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .analytics-grid {

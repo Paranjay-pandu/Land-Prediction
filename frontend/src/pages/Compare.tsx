@@ -5,6 +5,8 @@ import { getIndicatorMeta, formatIndicatorValue } from "../utils/indicatorMeta";
 import { useStaggerReveal } from "../hooks/useStaggerReveal";
 import "../styles/commonPages.css";
 
+const SERIES_START_YEAR = 2023;
+
 interface CompareResponse {
     region1_value?: number;
     region2_value?: number;
@@ -49,6 +51,47 @@ const normalizeTimeSeries = (payload: unknown): Array<{ year: number; value: num
         .sort((a, b) => a.year - b.year);
 };
 
+const buildContinuousLineSeries = (
+    knownSeries: Array<{ year: number; value: number }>,
+    targetYear: number,
+    targetValue: number,
+): Array<{ year: number; value: number }> => {
+    const startYear = Math.min(SERIES_START_YEAR, targetYear);
+    const sorted = knownSeries
+        .filter((row) => Number.isFinite(row.year) && Number.isFinite(row.value))
+        .slice()
+        .sort((a, b) => a.year - b.year);
+
+    const knownByYear = new Map<number, number>(sorted.map((row) => [row.year, row.value]));
+    const lastKnown = sorted.filter((row) => row.year <= targetYear).pop();
+    const latestKnownYear = lastKnown?.year ?? startYear;
+    const latestKnownValue = lastKnown?.value ?? targetValue;
+    const startAnchor = sorted.filter((row) => row.year <= startYear).pop()?.value ?? latestKnownValue;
+
+    const rows: Array<{ year: number; value: number }> = [];
+    let carry = startAnchor;
+
+    for (let year = startYear; year <= targetYear; year += 1) {
+        if (knownByYear.has(year) && year <= latestKnownYear) {
+            carry = knownByYear.get(year) as number;
+            rows.push({ year, value: carry });
+            continue;
+        }
+
+        if (year <= latestKnownYear) {
+            rows.push({ year, value: carry });
+            continue;
+        }
+
+        const denominator = Math.max(targetYear - latestKnownYear, 1);
+        const ratio = (year - latestKnownYear) / denominator;
+        const interpolated = latestKnownValue + ((targetValue - latestKnownValue) * Math.max(0, Math.min(1, ratio)));
+        rows.push({ year, value: interpolated });
+    }
+
+    return rows;
+};
+
 const ComparePage = () => {
     const [regions, setRegions] = useState<string[]>([]);
     const [indicatorOptions, setIndicatorOptions] = useState<Record<string, string>>({});
@@ -58,7 +101,9 @@ const ComparePage = () => {
     const [year, setYear] = useState(2030);
     const [compareResult, setCompareResult] = useState<CompareResponse | null>(null);
     const [series, setSeries] = useState<Array<{ year: number; region1: number; region2: number }>>([]);
+    const [isOptionsLoading, setIsOptionsLoading] = useState(true);
     const [isLoading, setIsLoading] = useState(false);
+    const [hasInitialData, setHasInitialData] = useState(false);
     const [errorMessage, setErrorMessage] = useState("");
 
     const compareRef = useRef<HTMLDivElement | null>(null);
@@ -89,6 +134,7 @@ const ComparePage = () => {
     useEffect(() => {
         async function initialize() {
             try {
+                setIsOptionsLoading(true);
                 const [regionsResponse, indicatorsResponse] = await Promise.all([
                     apiService.getRegions(),
                     apiService.getIndicatorOptions(),
@@ -112,6 +158,8 @@ const ComparePage = () => {
             } catch (error) {
                 console.error("Error loading compare options:", error);
                 setErrorMessage("Unable to load comparison options.");
+            } finally {
+                setIsOptionsLoading(false);
             }
         }
 
@@ -141,33 +189,31 @@ const ComparePage = () => {
             const region1Series = normalizeTimeSeries(region1SeriesResponse);
             const region2Series = normalizeTimeSeries(region2SeriesResponse);
 
-            if (region1Series.length >= 3 && region2Series.length >= 3) {
-                const firstByYear = new Map<number, number>(region1Series.map((row) => [row.year, row.value]));
-                const secondByYear = new Map<number, number>(region2Series.map((row) => [row.year, row.value]));
-                const years = [...new Set([...firstByYear.keys(), ...secondByYear.keys()])].sort((a, b) => a - b);
+            if (region1Series.length >= 1 && region2Series.length >= 1) {
+                const comparePayload = compareResponse && typeof compareResponse === "object" ? compareResponse as CompareResponse : null;
+                const forecastRegion1 = comparePayload?.region1_value ?? comparePayload?.region1?.value ?? region1Series[region1Series.length - 1]?.value ?? 0;
+                const forecastRegion2 = comparePayload?.region2_value ?? comparePayload?.region2?.value ?? region2Series[region2Series.length - 1]?.value ?? 0;
+
+                const region1Continuous = buildContinuousLineSeries(region1Series, year, forecastRegion1);
+                const region2Continuous = buildContinuousLineSeries(region2Series, year, forecastRegion2);
+                const region1Map = new Map<number, number>(region1Continuous.map((row) => [row.year, row.value]));
+                const region2Map = new Map<number, number>(region2Continuous.map((row) => [row.year, row.value]));
+
+                const years = Array.from({ length: Math.max(year - SERIES_START_YEAR + 1, 1) }, (_, idx) => SERIES_START_YEAR + idx)
+                    .filter((y) => y <= year);
 
                 const merged = years
                     .map((y) => {
-                        const first = firstByYear.get(y);
-                        const second = secondByYear.get(y);
+                        const first = region1Map.get(y);
+                        const second = region2Map.get(y);
                         if (first === undefined || second === undefined) {
                             return null;
                         }
                         return { year: y, region1: Math.round(first), region2: Math.round(second) };
                     })
-                    .filter((row): row is { year: number; region1: number; region2: number } => row !== null)
-                    .slice(-7);
+                    .filter((row): row is { year: number; region1: number; region2: number } => row !== null);
 
-                const comparePayload = compareResponse && typeof compareResponse === "object" ? compareResponse as CompareResponse : null;
-                const forecastRegion1 = comparePayload?.region1_value ?? comparePayload?.region1?.value ?? merged[merged.length - 1]?.region1 ?? 0;
-                const forecastRegion2 = comparePayload?.region2_value ?? comparePayload?.region2?.value ?? merged[merged.length - 1]?.region2 ?? 0;
-                const hasSelectedYear = merged.some((row) => row.year === year);
-
-                const withForecast = hasSelectedYear
-                    ? merged.map((row) => row.year === year ? { ...row, region1: Math.round(forecastRegion1), region2: Math.round(forecastRegion2) } : row)
-                    : [...merged, { year, region1: Math.round(forecastRegion1), region2: Math.round(forecastRegion2) }];
-
-                setSeries(withForecast.sort((a, b) => a.year - b.year));
+                setSeries(merged);
             } else {
                 setSeries([]);
             }
@@ -176,6 +222,7 @@ const ComparePage = () => {
             setErrorMessage("Comparison request failed. Please try another indicator or region pair.");
         } finally {
             setIsLoading(false);
+            setHasInitialData(true);
         }
     }
 
@@ -190,6 +237,17 @@ const ComparePage = () => {
     const region1Value = compareResult?.region1_value ?? compareResult?.region1?.value ?? comparisonTrend[comparisonTrend.length - 1].region1;
     const region2Value = compareResult?.region2_value ?? compareResult?.region2?.value ?? comparisonTrend[comparisonTrend.length - 1].region2;
     const delta = compareResult?.delta_percent ?? ((region1Value - region2Value) / Math.max(region2Value, 1)) * 100;
+
+    if (isOptionsLoading || (!hasInitialData && isLoading)) {
+        return (
+            <div className="compare-page">
+                <div className="panel route-loader" role="status" aria-live="polite">
+                    <div className="loading-spinner" />
+                    <span>Loading comparison data...</span>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div ref={compareRef} className="compare-page">
@@ -236,29 +294,33 @@ const ComparePage = () => {
             <section className="predict-grid">
                 <article className="panel compare-animate">
                     <h2>{region1 || "Region 1"}</h2>
-                    <p className="predict-primary">{formatForIndicator(region1Value)}</p>
+                    {isLoading ? <div className="loading-block" /> : <p className="predict-primary">{formatForIndicator(region1Value)}</p>}
                 </article>
                 <article className="panel compare-animate">
                     <h2>{region2 || "Region 2"}</h2>
-                    <p className="predict-primary">{formatForIndicator(region2Value)}</p>
+                    {isLoading ? <div className="loading-block" /> : <p className="predict-primary">{formatForIndicator(region2Value)}</p>}
                 </article>
                 <article className="panel compare-animate">
                     <h2>Delta</h2>
-                    <p className="predict-primary">{delta.toFixed(2)}%</p>
+                    {isLoading ? <div className="loading-block" /> : <p className="predict-primary">{delta.toFixed(2)}%</p>}
                 </article>
                 <article className="panel chart-span compare-animate">
                     <h2>{selectedIndicatorLabel} Trend</h2>
                     <div className="chart-wrap">
-                        <ResponsiveContainer width="100%" height={260}>
-                            <LineChart data={comparisonTrend}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
-                                <XAxis dataKey="year" />
-                                <YAxis />
-                                <Tooltip formatter={formatForIndicator} />
-                                <Line name={region1 || "Region 1"} dataKey="region1" stroke="#175676" strokeWidth={2.4} dot={false} />
-                                <Line name={region2 || "Region 2"} dataKey="region2" stroke="#3d8dad" strokeWidth={2.4} dot={false} strokeDasharray="5 5" />
-                            </LineChart>
-                        </ResponsiveContainer>
+                        {isLoading ? (
+                            <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing comparison...</span></div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={260}>
+                                <LineChart data={comparisonTrend}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#d2dbe6" />
+                                    <XAxis dataKey="year" allowDecimals={false} />
+                                    <YAxis />
+                                    <Tooltip formatter={formatForIndicator} />
+                                    <Line name={region1 || "Region 1"} dataKey="region1" stroke="#175676" strokeWidth={2.4} dot={false} />
+                                    <Line name={region2 || "Region 2"} dataKey="region2" stroke="#3d8dad" strokeWidth={2.4} dot={false} strokeDasharray="5 5" />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </article>
             </section>

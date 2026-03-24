@@ -9,6 +9,7 @@ type ForecastRow = { year: number; actual: number | null; prediction: number | n
 type CompareRow = { year: number; london: number; manchester: number };
 type HeatmapRow = { region: string; value: number };
 type Metrics = { mae: number; avgRae: number; r2: number; mse: number };
+const SERIES_START_YEAR = 2023;
 
 const defaultForecastSeries: ForecastRow[] = [
     { year: 2020, actual: 643000, prediction: null },
@@ -139,6 +140,65 @@ const normalizeRegionStats = (payload: unknown): HeatmapRow[] => {
         .slice(0, 8);
 };
 
+const buildContinuousLineSeries = (
+    knownSeries: Array<{ year: number; value: number }>,
+    targetYear: number,
+    targetValue: number,
+): Array<{ year: number; value: number }> => {
+    const startYear = Math.min(SERIES_START_YEAR, targetYear);
+    const sorted = knownSeries
+        .filter((row) => Number.isFinite(row.year) && Number.isFinite(row.value))
+        .slice()
+        .sort((a, b) => a.year - b.year);
+
+    const knownByYear = new Map<number, number>(sorted.map((row) => [row.year, row.value]));
+    const lastKnown = sorted.filter((row) => row.year <= targetYear).pop();
+    const latestKnownYear = lastKnown?.year ?? startYear;
+    const latestKnownValue = lastKnown?.value ?? targetValue;
+    const startAnchor = sorted.filter((row) => row.year <= startYear).pop()?.value ?? latestKnownValue;
+
+    const rows: Array<{ year: number; value: number }> = [];
+    let carry = startAnchor;
+
+    for (let year = startYear; year <= targetYear; year += 1) {
+        if (knownByYear.has(year) && year <= latestKnownYear) {
+            carry = knownByYear.get(year) as number;
+            rows.push({ year, value: carry });
+            continue;
+        }
+
+        if (year <= latestKnownYear) {
+            rows.push({ year, value: carry });
+            continue;
+        }
+
+        const denominator = Math.max(targetYear - latestKnownYear, 1);
+        const ratio = (year - latestKnownYear) / denominator;
+        const interpolated = latestKnownValue + ((targetValue - latestKnownValue) * Math.max(0, Math.min(1, ratio)));
+        rows.push({ year, value: interpolated });
+    }
+
+    return rows;
+};
+
+const buildForecastRows = (
+    knownSeries: Array<{ year: number; value: number }>,
+    targetYear: number,
+    targetValue: number,
+): ForecastRow[] => {
+    const lineSeries = buildContinuousLineSeries(knownSeries, targetYear, targetValue);
+    const latestKnownYear = knownSeries
+        .filter((row) => row.year <= targetYear)
+        .sort((a, b) => a.year - b.year)
+        .pop()?.year ?? Math.min(SERIES_START_YEAR, targetYear);
+
+    return lineSeries.map((row) => ({
+        year: row.year,
+        actual: row.year <= latestKnownYear ? row.value : null,
+        prediction: row.year >= latestKnownYear ? row.value : null,
+    }));
+};
+
 const HomePage = () => {
     const pageRef = useRef<HTMLDivElement | null>(null);
     const [regions, setRegions] = useState<string[]>([]);
@@ -149,7 +209,9 @@ const HomePage = () => {
     const [selectedInsight, setSelectedInsight] = useState("housing");
     const [selectedYear, setSelectedYear] = useState(2030);
     const [predictionRange, setPredictionRange] = useState<[number, number]>([2025, 2035]);
+    const [isOptionsLoading, setIsOptionsLoading] = useState(true);
     const [isLoading, setIsLoading] = useState(false);
+    const [hasInitialData, setHasInitialData] = useState(false);
     const [forecastData, setForecastData] = useState<ForecastRow[]>(defaultForecastSeries);
     const [compareData, setCompareData] = useState<CompareRow[]>(defaultCompareSeries);
     const [heatmapData, setHeatmapData] = useState<HeatmapRow[]>(defaultHeatmapData);
@@ -172,6 +234,7 @@ const HomePage = () => {
     useEffect(() => {
         async function loadOptions() {
             try {
+                setIsOptionsLoading(true);
                 const [regionsResponse, indicatorsResponse] = await Promise.all([
                     apiService.getRegions(),
                     apiService.getIndicatorOptions(),
@@ -205,6 +268,8 @@ const HomePage = () => {
                 setSelectedInsight(preferredIndicator);
             } catch (error) {
                 console.error("Error loading dashboard options:", error);
+            } finally {
+                setIsOptionsLoading(false);
             }
         }
 
@@ -260,58 +325,46 @@ const HomePage = () => {
                     }
                 }
 
-                if (selectedSeries.length >= 3) {
-                    const history = selectedSeries.slice(-6).map((row) => ({
-                        year: row.year,
-                        actual: Math.round(row.value),
-                        prediction: null,
-                    }));
-                    const lastYear = history[history.length - 1]?.year ?? 2028;
-                    const targetYear = Math.max(selectedYear, lastYear + 1);
-                    const lastActual = history[history.length - 1]?.actual ?? Math.round(predictedValue);
-                    const bridged = history.map((row) => row.year === lastYear ? { ...row, prediction: lastActual } : row);
-
-                    setForecastData([
-                        ...bridged,
-                        {
-                            year: targetYear,
-                            actual: null,
-                            prediction: Math.round(predictedValue),
-                        },
-                    ]);
+                if (selectedSeries.length >= 1) {
+                    const forecastRows = buildForecastRows(
+                        selectedSeries,
+                        selectedYear,
+                        Math.round(predictedValue),
+                    );
+                    setForecastData(forecastRows);
                 }
 
-                if (selectedSeries.length >= 3 && compareSeriesRaw.length >= 3) {
-                    const selectedByYear = new Map<number, number>(selectedSeries.map((row) => [row.year, row.value]));
-                    const compareByYear = new Map<number, number>(compareSeriesRaw.map((row) => [row.year, row.value]));
-                    const years = [...new Set([...selectedByYear.keys(), ...compareByYear.keys()])].sort((a, b) => a - b);
+                if (selectedSeries.length >= 1 && compareSeriesRaw.length >= 1) {
+                    const region1Payload = comparison.region1 && typeof comparison.region1 === "object"
+                        ? comparison.region1 as Record<string, unknown>
+                        : {};
+                    const region2Payload = comparison.region2 && typeof comparison.region2 === "object"
+                        ? comparison.region2 as Record<string, unknown>
+                        : {};
+                    const region1Forecast = asNumber(region1Payload.value) ?? selectedSeries[selectedSeries.length - 1]?.value ?? 0;
+                    const region2Forecast = asNumber(region2Payload.value) ?? compareSeriesRaw[compareSeriesRaw.length - 1]?.value ?? 0;
+
+                    const region1Continuous = buildContinuousLineSeries(selectedSeries, selectedYear, region1Forecast);
+                    const region2Continuous = buildContinuousLineSeries(compareSeriesRaw, selectedYear, region2Forecast);
+
+                    const region1Map = new Map<number, number>(region1Continuous.map((row) => [row.year, row.value]));
+                    const region2Map = new Map<number, number>(region2Continuous.map((row) => [row.year, row.value]));
+                    const years = Array.from({ length: Math.max(selectedYear - SERIES_START_YEAR + 1, 1) }, (_, idx) => SERIES_START_YEAR + idx)
+                        .filter((year) => year <= selectedYear);
 
                     const merged = years
                         .map((year) => {
-                            const first = selectedByYear.get(year);
-                            const second = compareByYear.get(year);
+                            const first = region1Map.get(year);
+                            const second = region2Map.get(year);
                             if (first === undefined || second === undefined) {
                                 return null;
                             }
                             return { year, london: Math.round(first), manchester: Math.round(second) };
                         })
-                        .filter((row): row is CompareRow => row !== null)
-                        .slice(-6);
+                        .filter((row): row is CompareRow => row !== null);
 
-                    if (merged.length >= 3) {
-                        const region1Payload = comparison.region1 && typeof comparison.region1 === "object"
-                            ? comparison.region1 as Record<string, unknown>
-                            : {};
-                        const region2Payload = comparison.region2 && typeof comparison.region2 === "object"
-                            ? comparison.region2 as Record<string, unknown>
-                            : {};
-                        const region1Forecast = asNumber(region1Payload.value) ?? merged[merged.length - 1].london;
-                        const region2Forecast = asNumber(region2Payload.value) ?? merged[merged.length - 1].manchester;
-                        const hasSelectedYear = merged.some((row) => row.year === selectedYear);
-                        const withForecast = hasSelectedYear
-                            ? merged.map((row) => row.year === selectedYear ? { ...row, london: Math.round(region1Forecast), manchester: Math.round(region2Forecast) } : row)
-                            : [...merged, { year: selectedYear, london: Math.round(region1Forecast), manchester: Math.round(region2Forecast) }];
-                        setCompareData(withForecast.sort((a, b) => a.year - b.year));
+                    if (merged.length >= 1) {
+                        setCompareData(merged);
                     }
                 }
 
@@ -333,6 +386,7 @@ const HomePage = () => {
                 console.error("Error loading dashboard analytics:", error);
             } finally {
                 setIsLoading(false);
+                setHasInitialData(true);
             }
         }
 
@@ -353,6 +407,17 @@ const HomePage = () => {
         : 0;
 
     useStaggerReveal(pageRef, ".home-animate", 26);
+
+    if (isOptionsLoading || (!hasInitialData && isLoading)) {
+        return (
+            <div className="predict-page">
+                <div className="panel route-loader" role="status" aria-live="polite">
+                    <div className="loading-spinner" />
+                    <span>Loading dashboard data...</span>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div ref={pageRef} className="dashboard-page">
@@ -422,24 +487,32 @@ const HomePage = () => {
                         <div className="forecast-highlight">
                             <h3>{selectedRegion} {selectedIndicatorLabel} {selectedYear}</h3>
                             <p className="forecast-label">Predicted Value</p>
-                            <p className="forecast-price">{formatSelectedIndicator(forecastValue)}</p>
-                            <div className="confidence-band" aria-hidden="true">
-                                <span className="confidence-fill" />
-                            </div>
-                            <p className="confidence-text">95% CI: {formatSelectedIndicator(confidenceRange[0])} - {formatSelectedIndicator(confidenceRange[1])}</p>
+                            {isLoading ? <div className="loading-block" /> : <p className="forecast-price">{formatSelectedIndicator(forecastValue)}</p>}
+                            {isLoading ? <div className="loading-inline" /> : (
+                                <>
+                                    <div className="confidence-band" aria-hidden="true">
+                                        <span className="confidence-fill" />
+                                    </div>
+                                    <p className="confidence-text">95% CI: {formatSelectedIndicator(confidenceRange[0])} - {formatSelectedIndicator(confidenceRange[1])}</p>
+                                </>
+                            )}
                         </div>
 
                         <div className="chart-wrap">
-                            <ResponsiveContainer width="100%" height={250}>
-                                <AreaChart data={forecastData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#d0dae4" />
-                                    <XAxis dataKey="year" />
-                                    <YAxis />
-                                    <Tooltip formatter={formatSelectedIndicator} />
-                                    <Area type="monotone" dataKey="actual" stroke="#0f4d68" fill="#8ec6df" fillOpacity={0.25} strokeWidth={2} />
-                                    <Line type="monotone" dataKey="prediction" stroke="#2a6f97" strokeDasharray="6 6" strokeWidth={2.2} dot={false} />
-                                </AreaChart>
-                            </ResponsiveContainer>
+                            {isLoading ? (
+                                <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing forecast...</span></div>
+                            ) : (
+                                <ResponsiveContainer width="100%" height={250}>
+                                    <AreaChart data={forecastData}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#d0dae4" />
+                                        <XAxis dataKey="year" allowDecimals={false} />
+                                        <YAxis />
+                                        <Tooltip formatter={formatSelectedIndicator} />
+                                        <Area type="monotone" dataKey="actual" stroke="#0f4d68" fill="#8ec6df" fillOpacity={0.25} strokeWidth={2} />
+                                        <Line type="monotone" dataKey="prediction" stroke="#2a6f97" strokeDasharray="6 6" strokeWidth={2.2} dot={false} />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            )}
                         </div>
                     </div>
                 </article>
@@ -450,15 +523,19 @@ const HomePage = () => {
                     </div>
                     <p className="panel-subtitle">Regional signal intensity for {selectedInsightLabel}</p>
                     <div className="chart-wrap compact">
-                        <ResponsiveContainer width="100%" height={240}>
-                            <BarChart data={heatmapData} layout="vertical" margin={{ left: 14, right: 14 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#d6dfe8" />
-                                <XAxis type="number" hide />
-                                <YAxis type="category" dataKey="region" width={92} tick={{ fontSize: 12 }} />
-                                <Tooltip formatter={formatSelectedInsight} />
-                                <Bar dataKey="value" radius={[0, 8, 8, 0]} fill="#2b88a8" />
-                            </BarChart>
-                        </ResponsiveContainer>
+                        {isLoading ? (
+                            <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing insights...</span></div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={240}>
+                                <BarChart data={heatmapData} layout="vertical" margin={{ left: 14, right: 14 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#d6dfe8" />
+                                    <XAxis type="number" hide />
+                                    <YAxis type="category" dataKey="region" width={92} tick={{ fontSize: 12 }} />
+                                    <Tooltip formatter={formatSelectedInsight} />
+                                    <Bar dataKey="value" radius={[0, 8, 8, 0]} fill="#2b88a8" />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
                     </div>
                 </article>
 
@@ -472,26 +549,48 @@ const HomePage = () => {
                         <div className="compare-cards">
                             <div className="mini-stat">
                                 <h4>Region 1: {selectedRegion}</h4>
-                                <p>Trend Growth <strong>{region1Growth >= 0 ? "+" : ""}{region1Growth.toFixed(1)}%</strong></p>
-                                <p>Forecast Momentum <strong>{forecastMomentum >= 0 ? "+" : ""}{forecastMomentum.toFixed(1)}%</strong></p>
+                                {isLoading ? (
+                                    <>
+                                        <div className="loading-inline" />
+                                        <div className="loading-inline" />
+                                    </>
+                                ) : (
+                                    <>
+                                        <p>Trend Growth <strong>{region1Growth >= 0 ? "+" : ""}{region1Growth.toFixed(1)}%</strong></p>
+                                        <p>Forecast Momentum <strong>{forecastMomentum >= 0 ? "+" : ""}{forecastMomentum.toFixed(1)}%</strong></p>
+                                    </>
+                                )}
                             </div>
                             <div className="mini-stat alt">
                                 <h4>Region 2: {compareRegion}</h4>
-                                <p>Trend Growth <strong>{region2Growth >= 0 ? "+" : ""}{region2Growth.toFixed(1)}%</strong></p>
-                                <p>Forecast Momentum <strong>{forecastMomentum >= 0 ? "+" : ""}{(forecastMomentum * 0.85).toFixed(1)}%</strong></p>
+                                {isLoading ? (
+                                    <>
+                                        <div className="loading-inline" />
+                                        <div className="loading-inline" />
+                                    </>
+                                ) : (
+                                    <>
+                                        <p>Trend Growth <strong>{region2Growth >= 0 ? "+" : ""}{region2Growth.toFixed(1)}%</strong></p>
+                                        <p>Forecast Momentum <strong>{forecastMomentum >= 0 ? "+" : ""}{(forecastMomentum * 0.85).toFixed(1)}%</strong></p>
+                                    </>
+                                )}
                             </div>
                         </div>
                         <div className="chart-wrap">
-                            <ResponsiveContainer width="100%" height={250}>
-                                <LineChart data={compareData}>
-                                    <CartesianGrid strokeDasharray="4 4" stroke="#d1dbe6" />
-                                    <XAxis dataKey="year" />
-                                    <YAxis />
-                                    <Tooltip formatter={formatSelectedIndicator} />
-                                    <Line dataKey="london" name={selectedRegion} stroke="#0f4d68" strokeWidth={2.4} dot={false} />
-                                    <Line dataKey="manchester" name={compareRegion} stroke="#468faf" strokeWidth={2.4} dot={false} strokeDasharray="5 5" />
-                                </LineChart>
-                            </ResponsiveContainer>
+                            {isLoading ? (
+                                <div className="loading-chart"><div className="loading-spinner" /><span>Refreshing comparison...</span></div>
+                            ) : (
+                                <ResponsiveContainer width="100%" height={250}>
+                                    <LineChart data={compareData}>
+                                        <CartesianGrid strokeDasharray="4 4" stroke="#d1dbe6" />
+                                        <XAxis dataKey="year" allowDecimals={false} />
+                                        <YAxis />
+                                        <Tooltip formatter={formatSelectedIndicator} />
+                                        <Line dataKey="london" name={selectedRegion} stroke="#0f4d68" strokeWidth={2.4} dot={false} />
+                                        <Line dataKey="manchester" name={compareRegion} stroke="#468faf" strokeWidth={2.4} dot={false} strokeDasharray="5 5" />
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            )}
                         </div>
                     </div>
                 </article>
@@ -501,10 +600,21 @@ const HomePage = () => {
                         <h2>Model Accuracy</h2>
                     </div>
                     <div className="metric-list">
-                        <p><span>MAE</span><strong>{metrics.mae.toFixed(4)}</strong></p>
-                        <p><span>Avg RAE</span><strong>{metrics.avgRae.toFixed(4)}</strong></p>
-                        <p><span>R²</span><strong>{metrics.r2.toFixed(4)}</strong></p>
-                        <p><span>Current Test MSE</span><strong>{metrics.mse.toFixed(4)}</strong></p>
+                        {isLoading ? (
+                            <>
+                                <div className="loading-inline" />
+                                <div className="loading-inline" />
+                                <div className="loading-inline" />
+                                <div className="loading-inline" />
+                            </>
+                        ) : (
+                            <>
+                                <p><span>MAE</span><strong>{metrics.mae.toFixed(4)}</strong></p>
+                                <p><span>Avg RAE</span><strong>{metrics.avgRae.toFixed(4)}</strong></p>
+                                <p><span>R²</span><strong>{metrics.r2.toFixed(4)}</strong></p>
+                                <p><span>Current Test MSE</span><strong>{metrics.mse.toFixed(4)}</strong></p>
+                            </>
+                        )}
                     </div>
                 </article>
             </section>
